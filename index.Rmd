@@ -44,9 +44,6 @@ library(sf)
 library(tmap)
 library(tidyverse)
 
-wd.loc <- 'C:/Users/tfullman/Dropbox (TWS)/Tim/Arctic Landscape/Landscape Identification'
-gis.loc <- 'C:/Users/tfullman/Dropbox (TWS)/Tim/Research/GIS'
-
 ## Write a function for calculating area in acres below
 area_acres <- function(x){
     st_area(x) %>% 
@@ -63,17 +60,7 @@ area_acres <- function(x){
 
 ## Set up the info to be loaded
 tibble(
-  base_path =
-    gis.loc,
-  rel_path = 
-    c(rep('/Study Area', times = 3),
-      rep('/Tim Created/Arctic_Landscape_TWS', times = 8),
-      '/Tim Created/Work/NPRA',
-      '/Tim Created/Representation',
-      '/Mapping/NorthSlope_Infrastructure_NSSI/nsinfra_v10_09032021/NSInfra_09032021_shp',
-      '/Mapping/Ambler',
-      '/Mapping/akecoregions.tar/Ecoregions_level_3',
-      '/Mapping/CountriesofWorld'),
+  base_path = 'files',
   file =
       ## AK state boundary 
     c('AK_State_Boundary_63360',
@@ -130,9 +117,9 @@ tibble(
   ## want the shapefiles loaded and prepped, I don't care about something
   ## getting returned.
   pwalk(
-    function(base_path, rel_path, file, name, ...){
+    function(base_path, file, name, ...){
       ## Identify the full path of the shapefile
-      str_c(base_path, rel_path, '/', file, '.shp') %>% 
+      str_c(base_path, '/', file, '.shp') %>% 
         ## Load the shapefile
         st_read() %>% 
         ## Project to EPSG 6393 (2011 AK Albers)
@@ -148,11 +135,7 @@ tibble(
 ## and fix the projection information. Since I don't care about the individual
 ## attributes of the roads, I'll just make it a geometry to simplify things.
 rd_main <- 
-  str_c(gis.loc,
-               '/Mapping/Roads_Major',
-               '/',
-               'mv_major_road_ln',
-               '.shp') %>% 
+  'files/mv_major_road_ln.shp' %>% 
   ## Load the shapefile
   st_read() %>% 
   st_geometry() %>% 
@@ -168,7 +151,7 @@ rm(rd_ns, rd_main)
 ## The cities need an extra step or two, so process them separately
 ak_cities <- 
   ## Load the shapefile
-  st_read(paste0(gis.loc, '/From Ryan/cities/citiesx020.shp')) %>% 
+  st_read('files/citiesx020.shp') %>% 
   ## Filter to just AK cities
   filter(STATE == 'AK' &
            ## Also remove the industrial "cities" in the North Slope
@@ -203,7 +186,7 @@ AKnative <-
   st_union()
 
 ## Load the hillshade raster
-hillshade <- raster::raster(paste0(gis.loc, '/From Ryan/AK_Development/statehillutm')) %>% 
+hillshade <- raster::raster('files/statehillutm') %>% 
   raster::projectRaster(crs = 'EPSG:6393')
 
 ## Create a vector of communities in the WAH range represented on the WACH WG
