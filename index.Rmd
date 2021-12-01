@@ -1,0 +1,1115 @@
+---
+title: "TWS Arctic Landscape Boundary Identification"
+date: "2021-12-01"
+---
+
+<!-- The head tag, <head>, is a container for metadata in an html document. 
+We can use it to define styles and do lots of other cool things things. -->
+<head>
+
+```{css, echo = FALSE}
+/* We can use the body tag to change the default text size of the whole document. */
+  
+body {
+  font-size: 18px
+}
+
+/* We can increase the space between our list items */
+  
+ul, li {
+  padding-top: 0.5em;
+}
+
+/* Try a different quote style, since the above did not work.*/
+.timquote {
+  display: inline-block;
+  width:500px;
+  height:200px;
+  background-color: #7FADE3;
+  margin-top: 10px;
+  marin-left: 10px;
+}
+```
+
+<!-- Set up knitr, load the R libraries, and load and prep the data we'll use below.-->
+
+```{r code_setup, include = FALSE}
+options(knitr.table.format = "html")
+
+knitr::opts_chunk$set(error = TRUE)
+
+library(packr)
+library(units)
+library(sf)
+library(tmap)
+library(tidyverse)
+
+wd.loc <- 'C:/Users/tfullman/Dropbox (TWS)/Tim/Arctic Landscape/Landscape Identification'
+gis.loc <- 'C:/Users/tfullman/Dropbox (TWS)/Tim/Research/GIS'
+
+## Write a function for calculating area in acres below
+area_acres <- function(x){
+    st_area(x) %>% 
+    ## Convert to acres
+    set_units('acres') %>% 
+    ## Get rid of the label
+    as.numeric()
+}
+
+## I want all the shapefiles loaded and in the same projection. Most require
+## similar loading and processing steps so I'll prep a tibble containing their
+## information and then map across that to load and prep them at once. I'll
+## assign them all to the 2011 AK Albers projection, EPSG 6393.
+
+## Set up the info to be loaded
+tibble(
+  base_path =
+    gis.loc,
+  rel_path = 
+    c(rep('/Study Area', times = 3),
+      rep('/Tim Created/Arctic_Landscape_TWS', times = 8),
+      '/Tim Created/Work/NPRA',
+      '/Tim Created/Representation',
+      '/Mapping/NorthSlope_Infrastructure_NSSI/nsinfra_v10_09032021/NSInfra_09032021_shp',
+      '/Mapping/Ambler',
+      '/Mapping/akecoregions.tar/Ecoregions_level_3',
+      '/Mapping/CountriesofWorld'),
+  file =
+      ## AK state boundary 
+    c('AK_State_Boundary_63360',
+      ## NPR-A boundary
+      'NPRA_Boundary',
+      ## Arctic Refuge boundary
+      'Arctic_Refuge_Boundary',
+      ## Caribou annual ranges
+      'WAH_Annual_Range',
+      'TCH_Annual_Range',
+      'CAH_Annual_Range',
+      'PCH_Annual_Range',
+      ## Inupiat and Gwich'in homelands
+      'Inupiat_homelands',
+      'Gwichin_homelands',
+      ## Subsistence areas
+      'Subsistence_NorthSlope_all_dissolved',
+      ## Arctic Level 3 ecoregions
+      'Ecoregions_Level_3_TWS_Arctic',
+      ## Colville River watershed
+      'Colville_Basin_Onshore',
+      ## Arctic Circle
+      'Arctic_Circle_AK_Albers',
+      ## North Slope roads
+      'NSRoads_V10',
+      ## Ambler road
+      'Ambler_Rd',
+      ## All AK Level 3 ecoregions
+      'ak_eco_l3',  ## from https://edg.epa.gov/metadata/catalog/search/resource/details.page?uuid=%7Bd60d4f92-706f-4f6a-9e38-6fb063bd2962%7D
+      ## Canada
+      'Canada_WGS84'),
+  name = 
+    c('ak',
+      'npra',
+      'refuge',
+      'wah',
+      'tch',
+      'cah',
+      'pch',
+      'inupiat',
+      'gwichin',
+      'subsistence',
+      'arctic_ecoregion',
+      'colville',
+      'arctic_circle',
+      'rd_ns',
+      'ambler',
+      'ecoregion',
+      'canada')
+  ) %>% 
+  ## Map across the tibble to load and prep the shapefiles, assigning them with
+  ## their identified names to the global environment. I'll actually use pwalk()
+  ## instead of pmap() since this triggers effects but returns invisibly. I just
+  ## want the shapefiles loaded and prepped, I don't care about something
+  ## getting returned.
+  pwalk(
+    function(base_path, rel_path, file, name, ...){
+      ## Identify the full path of the shapefile
+      str_c(base_path, rel_path, '/', file, '.shp') %>% 
+        ## Load the shapefile
+        st_read() %>% 
+        ## Project to EPSG 6393 (2011 AK Albers)
+        st_transform(6393) %>% 
+        ## Assign it to the global environment with the desired name
+        assign(x = name, value = ., envir = .GlobalEnv)
+    })
+
+## There is an issue with the major roads shapefile CRS. While it reads in okay
+## trying to project it to another projection results in an empty set of
+## linestrings. In Version 03 of this code I developed a workaround based on
+## identifying a likely alternate CRS definition. Here I will load the shapefile
+## and fix the projection information. Since I don't care about the individual
+## attributes of the roads, I'll just make it a geometry to simplify things.
+rd_main <- 
+  str_c(gis.loc,
+               '/Mapping/Roads_Major',
+               '/',
+               'mv_major_road_ln',
+               '.shp') %>% 
+  ## Load the shapefile
+  st_read() %>% 
+  st_geometry() %>% 
+  ## Set CRS to NULL
+  `st_crs<-`(NA) %>% 
+  ## Set CRS to EPSG 6393
+  `st_crs<-`(6393)
+
+## Combine existing North Slope and major roads
+roads_all <- st_union(st_geometry(rd_ns), rd_main)
+rm(rd_ns, rd_main)
+
+## The cities need an extra step or two, so process them separately
+ak_cities <- 
+  ## Load the shapefile
+  st_read(paste0(gis.loc, '/From Ryan/cities/citiesx020.shp')) %>% 
+  ## Filter to just AK cities
+  filter(STATE == 'AK' &
+           ## Also remove the industrial "cities" in the North Slope
+           !(NAME %in% c('Umiat', 'Deadhorse', 'Prudhoe Bay'))) %>% 
+  ## Change Barrow to Utqiaġvik
+  mutate(
+    NAME = recode(NAME, 'Barrow' = 'Utqiaġvik')
+  ) %>% 
+  ## Only keep needed columns to save space
+  select(name = NAME,
+         county = COUNTY) %>% 
+  ## Project to 2011 AK Albers
+  st_transform(crs = st_crs(6393))
+
+## Create a combined caribou range polygon
+caribou <- 
+  list(wah, tch, cah, pch) %>% 
+  ## Use reduce() to apply this to each pair until all are combined
+  reduce(st_union) %>% 
+  ## Clip the result to AK to exclude Canadian areas
+  st_intersection(ak) %>% 
+  ## Dissolve this into one feature
+  st_union()
+
+## Create a combined Alaska Native traditional lands polygon
+AKnative <- 
+  ## Combine the polygons
+  st_union(inupiat, gwichin) %>% 
+  ## Clip the result to AK to exclude Canadian areas
+  st_intersection(ak) %>% 
+  ## Dissolve this into one feature
+  st_union()
+
+## Load the hillshade raster
+hillshade <- raster::raster(paste0(gis.loc, '/From Ryan/AK_Development/statehillutm')) %>% 
+  raster::projectRaster(crs = 'EPSG:6393')
+
+## Create a vector of communities in the WAH range represented on the WACH WG
+wg_communities <- c("Allakaket", "Ambler", "Anaktuvuk Pass", "Atqasuk",
+                    "Utqiaġvik", "Bettles", "Brevig Mission", "Buckland", "Deering", "Elim",
+                    "Galena", "Golovin", "Hughes", "Huslia", "Kaltag", "Kiana", "Kivalina",
+                    "Kobuk", "Kotlik", "Kotzebue", "Koyuk", "Koyukuk", "Noatak", "Nome", "Noorvik",
+                    "Nuiqsut", "Nulato", "Point Hope", "Point Lay", "Saint Michael", "Selawik", "Shaktoolik",
+                    "Shishmaref", "Shungnak", "Stebbins", "Teller", "Unalakleet", "Wainwright",
+                    "Wales", "White Mountain", "Wiseman")
+
+## Create a vector of key partner communities
+partners <- c('Nuiqsut', 'Utqiaġvik', 'Kaktovik', 'Arctic Village', 'Venetie')
+
+```
+
+
+## Landscape conservation at TWS
+
+In 2020, The Wilderness Society started shifting the way we work toward a vision of a nationwide network of resilient landscapes as the means of achieving our new strategic framework and collective impact results.
+
+The goal of this shift in approach is to sustain human flourishing, biological diversity, and natural ecological processes over long periods of time.
+
+To do this, we are changing our:
+
+* *Geographic focus* from **individual** parcels to **whole landscapes**
+* *Perspective* from federal public lands to integrated multi-owner ecosystems
+* *Approach* from enlisting support for an already established agenda to shared decision-making and collaboration with communities
+
+As John Jarvis, former director of the National Park Service, <a href = "https://escholarship.org/uc/item/2mq6v6tn" target = "_blank">described it</a>:
+
+<div class = "timquote">
+*Climate change, along with other stressors, has forced a reconsideration of the current model of protected area management to one of large landscape integration. Learning to manage at the landscape scale, with parks or equivalent protected areas linked with corridors and integrated with communities, transportation systems, local people, watersheds, agriculture, and sustainable economies, is a critical component to the future of conservation.*
+</div>
+
+<br>
+
+For more information about TWS' approach to landscape conservation, see the resources in <a href = "https://www.dropbox.com/sh/mzryjaw8rjyligz/AAAo61G-YgH-fjz1gRU8qkRYa?dl=0" target = "_blank">this Dropbox folder</a>.
+
+<hr>
+<br>
+
+## Defining the Arctic landscape
+As TWS makes the shift to landscape conservation, it is important to be clear about which areas are covered by each priority landscape. While some actions may take place outside of the official landscape boundaries, we expect most efforts will be contained by the landscape extent. It is thus important to be clear how we are defining each landscape.
+
+While the Arctic landscape was identified as one of the TWS priority landscapes, it was not part of the same process of selection by Landscape Review Teams that other landscapes underwent. As a result, no formal definition of the landscape boundary was ever established.
+
+This document presents a starting point to stimulate thinking about how the Arctic landscape could be defined. It describes multiple options and provides interactive data to help the Arctic team explore differences between possible boundaries. **These options are not meant to be an exhaustive set of possibilities**, but rather to present a possible set of options that can further the Arctic team's thinking around selecting a boundary for the Arctic Landscape. In the words of TWS Senior Science Director Greg Aplet, whatever boundary we choose, *“the most important thing is that the boundary reflects an ecosystem of sufficient size to sustain its contents.”*
+
+Three potential options are described:
+
+1. Arctic ecoregions
+2. Traditional Indigenous homelands
+3. Caribou ranges
+
+We first provide an overview of each option, before offering interactive tools for exploring tradeoffs.
+
+<hr>
+
+## Option 1: Ecoregions
+
+As a starting point for identifying the priority landscapes for the Lower 48, the TWS landscape team used ecoregions. These are areas that typically have similar environmental conditions, in terms of climate, soils, ecosystems, species, etc.
+
+As the map below demonstrates, Alaska contains 20 "level 3" ecoregions. Data from the US <a href = "https://edg.epa.gov/metadata/catalog/search/resource/details.page?uuid=%7Bd60d4f92-706f-4f6a-9e38-6fb063bd2962%7D" target = "_blank">Environmental Protection Agency</a>.
+
+```{r ecoregions, echo = FALSE, message = FALSE}
+## Make ecoregion names shorter
+eco_names <- tibble(
+  orig_names =
+    ecoregion %>% 
+    pull(US_L3NAME) %>% 
+    unique(),
+  
+  short_names =
+    c("Arctic Coastal Plain",                        
+      "Arctic Foothills",                            
+      "Subarc. Cstl. Plain",                    
+      "Seward Peninsula",                            
+      "Bristol Bay-Nushagak",               
+      "Aleutian Islands",                            
+      "Brooks Range",                                
+      "Int. Forest Low/Upland",      
+      "Int. Bottomlands",                        
+      "Yukon Flats",                                 
+      "Ogilvie Mountains",                           
+      "Interior Highlands",                          
+      "Alaska Range",                                
+      "Copper Plateau",                              
+      "Wrangell Mtns.",                          
+      "Ahklun-Kilbuck Mtns.",                
+      "Alaska Pen. Mtns.",                  
+      "Cook Inlet",                                  
+      "Pacific Coastal Mtns.",                   
+      "Coastal Forests")
+)
+
+tmap_mode('plot')
+
+## Set up background details  
+tm_shape(
+  hillshade,
+  raster.downsample = FALSE) +
+  tm_raster(
+    palette = 'Greys',
+    legend.show = FALSE) +
+  
+  tm_shape(
+    ak,
+    is.master = TRUE) +
+  tm_borders() +
+  
+  tm_shape(canada) +
+  tm_polygons(col = 'grey30') +
+  
+  ## Add ecoregions
+  tm_shape(
+    ecoregion %>%
+      ## Merge in short names
+      left_join(
+        eco_names,
+        by = c('US_L3NAME' = 'orig_names')) %>% 
+      group_by(short_names) %>% 
+      summarize() %>% 
+      slice(1:7),
+    name = 'Ecoregions') +
+  tm_fill(
+    col = 'short_names',
+    palette = 'Dark2',
+    alpha = 0.5,
+    title = '',
+    legend.is.portrait = FALSE) +
+  
+  tm_shape(
+    ecoregion %>% 
+      ## Merge in short names
+      left_join(
+        eco_names,
+        by = c('US_L3NAME' = 'orig_names')) %>% 
+      group_by(short_names) %>%
+      summarize() %>% 
+      slice(8:14),
+    name = 'Ecoregions') +
+  tm_fill(
+    col = 'short_names',
+    palette = 'Pastel2',
+    alpha = 0.5,
+    title = '',
+    legend.is.portrait = FALSE) +
+  
+  tm_shape(
+    ecoregion %>% 
+      ## Merge in short names
+      left_join(
+        eco_names,
+        by = c('US_L3NAME' = 'orig_names')) %>% 
+      group_by(short_names) %>%
+      summarize() %>% 
+      slice(15:20),
+    name = 'Ecoregions') +
+  tm_fill(
+    col = 'short_names',
+    palette = 'Set1',
+    alpha = 0.5,
+    title = '',
+    legend.is.portrait = FALSE) +
+
+  ## Add human features
+  tm_shape(npra) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(refuge) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(roads_all) +
+  tm_lines() +
+  
+  ## Add cities on top
+  tm_shape(ak_cities) +
+  tm_dots() +
+  
+  ## Modify appearance
+  tm_layout(
+    main.title = 'Alaskan ecoregions',
+    main.title.position = 'center',
+    bg.color = 'skyblue',
+    legend.outside = TRUE,
+    legend.outside.position = 'bottom',
+    legend.stack = 'vertical')
+
+```
+
+<br>
+
+Selecting 6 arctic ecoregions with similar features yields a boundary covering `r arctic_ecoregion %>% st_union() %>% area_acres() %>% format(big.mark = ',')` acres.
+
+It should be noted, that while ecoregions formed the starting point for priority landscape identification in the Lower 48, other considerations went into selection of the final priority landscape boundaries. As the map below displays, use of arctic ecoregions would encapsulate all of the NPR-A, but only the northern portions of the Arctic Refuge. It encapsulates all of the Colville watershed and the vast majority of subsistence harvest areas used by many North Slope communities.^[Subsistence harvest areas depicted in the figure represent combined areas for harvest of caribou, moose, furbearers, fish, wildfowl, and vegetation for Point Hope, Point Lay, Wainwright, Utqiaġvik, Atqasuk, Nuiqsut, Anaktuvuk Pass, and Kaktovik. Data from the <a href = "https://accscatalog.uaa.alaska.edu/dataset/north-slope-rapid-ecoregional-assessment" target = "_blank">BLM North Slope REA</a>.] The arctic ecoregions include many, but not all partner communities. Efforts relating to the Ambler Road and to caribou migration and wintering range would fall largely outside of this boundary.
+
+```{r option1, echo = FALSE, warning = FALSE, message = FALSE}
+tmap_mode('plot')
+
+## Set up background details  
+tm_shape(
+  hillshade,
+  raster.downsample = FALSE) +
+  tm_raster(
+    palette = 'Greys',
+    legend.show = FALSE) +
+  
+  tm_shape(
+    ak,
+    bbox = 
+      arctic_ecoregion %>%
+      st_union() %>%
+      st_bbox(),
+    is.master = TRUE) +
+  tm_borders() +
+  
+  tm_shape(canada) +
+  tm_polygons(col = 'grey30') +
+  
+  ## Add additional features
+  tm_shape(subsistence,
+           name = 'Subsistence use areas') +
+  tm_polygons(
+    col = 'yellow',
+    alpha = 0.4) +
+  
+  tm_shape(npra) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(refuge) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(colville,
+           name = 'Colville River watershed') +
+  tm_polygons(
+    col = 'lightblue',
+    border.col = 'blue',
+    alpha = 0.4) +
+  
+  tm_shape(roads_all) +
+  tm_lines() +
+  
+  tm_shape(ambler,
+           name = 'Ambler Road') +
+  tm_lines(
+    col = 'red',
+    lwd = 2) +
+  
+  ## Add Arctic tundra ecoregion boundary
+  tm_shape(
+    arctic_ecoregion %>%
+      st_union()) +
+  tm_borders(
+    col = 'white',
+    lwd = 3) +
+  
+  ## Add cities
+  tm_shape(ak_cities) +
+  tm_dots(size = 0.25) +
+  
+  ## Modify appearance
+  tm_layout(
+    main.title = 'Option 1: Ecoregions',
+    main.title.position = 'center',
+    bg.color = 'skyblue',
+    legend.bg.color = 'white') +
+  
+  tm_add_legend(
+    type = 'fill',
+    labels = 'Subsistence areas',
+    col = 'yellow',
+    border.col = 'grey',
+    alpha = 0.7) +
+  
+  tm_add_legend(
+    type = 'fill',
+    labels = 'Colville watershed',
+    col = 'lightblue',
+    border.col = 'blue',
+    alpha = 0.4) +
+  
+  tm_add_legend(
+    type = 'line',
+    lwd = 2,
+    labels = 'Ambler Road',
+    col = 'red')
+
+```
+
+<br>
+
+<hr>
+
+## Option 2: Traditional Indigenous homelands
+
+Indigenous people have long stewarded the lands, waters, and species of what is now called Alaska. These peoples maintain rich cultural and spiritual connections to the land and its inhabitants. In recognition of this stewardship and connections, as well as the importance of human flourishing to effective landscape conservation, one possibility for defining the landscape boundary is to use the boundary of traditional Indigenous homelands.
+
+The map below displays traditional homelands of the Iñupiat and Gwich'in people, based on data from <a href = "https://native-land.ca/" target = "_blank">Native Land Digital</a>.
+
+```{r indigenous_lands, echo = FALSE, warning = FALSE, message = FALSE}
+tmap_mode('plot')
+
+## Set up background details  
+tm_shape(
+  hillshade,
+  raster.downsample = FALSE) +
+  tm_raster(
+    palette = 'Greys',
+    legend.show = FALSE) +
+  
+  tm_shape(
+    ak,
+    bbox = 
+      st_union(inupiat, gwichin) %>%
+      st_bbox(),
+    is.master = TRUE) +
+  tm_borders() +
+  
+  tm_shape(canada) +
+  tm_polygons(col = 'grey30') +
+  
+  ## Add Indigenous homelands
+  tm_shape(gwichin) +
+  tm_polygons(col = 'blue',
+              alpha = 0.5) +
+  
+  tm_shape(inupiat) +
+  tm_polygons(col = 'red',
+              alpha = 0.5) +
+  
+  ## Add human features
+  tm_shape(npra) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(refuge) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(roads_all) +
+  tm_lines() +
+  
+  ## Add cities
+  tm_shape(ak_cities) +
+  tm_dots(size = 0.25) +
+  
+  ## Modify appearance
+  tm_layout(
+    main.title = 'Homelands of the Iñupiat and Gwich\'in',
+    main.title.position = 'center',
+    bg.color = 'skyblue')
+```
+
+Combining both homelands yields a boundary covering `r AKnative %>% area_acres() %>% format(big.mark = ',')` acres.
+
+Use of this boundary for the Arctic landscape would capture all of TWS' work in the NPR-A and Arctic Refuge and would include main partner communities. Efforts relating to the Ambler Road would fall partially outside of this boundary.
+
+```{r option2, echo = FALSE, warning = FALSE, message = FALSE}
+tmap_mode('plot')
+
+## Set up background details  
+tm_shape(
+  hillshade,
+  raster.downsample = FALSE) +
+  tm_raster(
+    palette = 'Greys',
+    legend.show = FALSE) +
+  
+  tm_shape(
+    ak,
+    bbox = 
+      AKnative %>%
+      st_bbox(),
+    is.master = TRUE) +
+  tm_borders() +
+  
+  tm_shape(canada) +
+  tm_polygons(col = 'grey30') +
+  
+  ## Add additional features
+  tm_shape(subsistence,
+           name = 'Subsistence use areas') +
+  tm_polygons(
+    col = 'yellow',
+    alpha = 0.4) +
+  
+  tm_shape(npra) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(refuge) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(colville,
+           name = 'Colville River watershed') +
+  tm_polygons(
+    col = 'lightblue',
+    border.col = 'blue',
+    alpha = 0.4) +
+  
+  tm_shape(roads_all) +
+  tm_lines() +
+  
+  tm_shape(ambler,
+           name = 'Ambler Road') +
+  tm_lines(
+    col = 'red',
+    lwd = 2) +
+  
+  ## Add traditional homelands boundary
+  tm_shape(AKnative) +
+  tm_borders(
+    col = 'white',
+    lwd = 3) +
+  
+  ## Add cities
+  tm_shape(ak_cities) +
+  tm_dots(size = 0.25) +
+  
+  ## Modify appearance
+  tm_layout(
+    main.title = 'Option 2: Traditional Indigenous homelands',
+    main.title.position = 'center',
+    bg.color = 'skyblue',
+    legend.bg.color = 'white') +
+  
+  tm_add_legend(
+    type = 'fill',
+    labels = 'Subsistence areas',
+    col = 'yellow',
+    border.col = 'grey',
+    alpha = 0.7) +
+  
+  tm_add_legend(
+    type = 'fill',
+    labels = 'Colville watershed',
+    col = 'lightblue',
+    border.col = 'blue',
+    alpha = 0.4) +
+  
+  tm_add_legend(
+    type = 'line',
+    lwd = 2,
+    labels = 'Ambler Road',
+    col = 'red')
+```
+
+<br>
+
+<hr>
+
+## Option 3: Caribou herd ranges
+
+Four caribou herds calve in northern Alaska: the Western Arctic Herd (WAH), Teshekpuk Caribou Herd (TCH), Central Arctic Herd (CAH), and Porcupine Caribou Herd (PCH). These caribou are central to culture, food security and the well-being of Indigenous people across northern Alaska. They also play a variety of important ecological roles.
+
+```{r caribou_range, echo = FALSE, warning = FALSE, message = FALSE}
+tmap_mode('plot')
+
+  ## Set up background details  
+  tm_shape(
+    hillshade,
+    raster.downsample = FALSE) +
+  tm_raster(
+    palette = 'Greys',
+    legend.show = FALSE) +
+  
+  tm_shape(
+    ak,
+    bbox = 
+      list(wah, tch, cah, pch) %>% 
+      reduce(st_union) %>%
+      st_bbox(),
+    is.master = TRUE) +
+  tm_borders() +
+  
+  tm_shape(canada) +
+  tm_polygons(col = 'grey30') +
+  
+  ## Add caribou ranges
+  tm_shape(
+    wah,
+    name = 'WAH') +
+  tm_polygons(
+    col = 'red',
+    alpha = 0.5) +
+  tm_shape(tch,
+           name = 'TCH') +
+  tm_polygons(
+    col = 'blue',
+    alpha = 0.5) +
+  tm_shape(
+    cah,
+    name = 'CAH') +
+  tm_polygons(
+    col = 'yellow',
+    alpha = 0.5) +
+  tm_shape(
+    pch,
+    name = 'PCH') +
+  tm_polygons(
+    col = 'darkgreen',
+    alpha = 0.5) +
+  
+  ## Add human features
+  tm_shape(npra) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(refuge) +
+  tm_borders(lwd = 1.5,
+             col = 'brown') +
+  
+  tm_shape(roads_all) +
+  tm_lines() +
+  
+  tm_shape(ak_cities) +
+  tm_dots(size = 0.25) +
+  
+  ## Modify appearance
+  tm_layout(
+    main.title = 'Arctic caribou herds in Alaska',
+    main.title.position = 'center',
+    bg.color = 'skyblue',
+    legend.bg.color = 'white') +
+  
+  tm_add_legend(
+    type = 'fill',
+    labels = c('WAH', 'TCH', 'CAH', 'PCH'),
+    col = c('red', 'blue', 'yellow', 'darkgreen'),
+    title = 'Caribou herd')
+```
+
+<br>
+
+Defining the Arctic Landscape boundary based on caribou herd ranges would represent a functionally based landscape definition. This is not intended to indicate that caribou are the only important species in the region. Rather, caribou are a convenient option for a land-based species that covers broad areas and thus encompasses many other important species and habitats in a way unparalleled by most other Arctic species.
+
+As the table below shows, these herds cover large areas. This brings them into contact with many communities and protected areas.
+
+```{r caribou_range_table, echo = FALSE}
+list('WAH' = wah,
+     'TCH' = tch,
+     'CAH' = cah,
+     'PCH' = pch,
+     'Total' = caribou) %>% 
+  imap(
+    function(.x, .y){
+    ## Calculate area in units of sq meters
+    area_ac <-
+      area_acres(.x)
+    
+    ## Create a tibble
+    tibble(
+      'Herd' = .y,
+      'Area_acres' = area_ac)
+  }) %>% 
+  bind_rows() %>% 
+  ## Display the results as a kable
+  knitr::kable(
+    format = 'html',
+    digits = 0,
+    col.names = c('Herd',
+                  'Area (acres)'),
+    align = c('l', 'r'),
+    format.args = list(big.mark = ',')) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = 'striped',
+    full_width = FALSE)
+```
+
+<br>
+
+Using the combined caribou range area to define the Arctic landscape would help ensure that we are working in a functionally intact landscape that is large enough to sustain its contents. It would also cover many of the TWS priority areas and encapsulate most of our partner communities. Furthermore, this scale coincides with the scale of subsistence harvest areas used by many North Slope communities.
+
+```{r option3, echo = FALSE, warning = FALSE, message = FALSE}
+tmap_mode('plot')
+  
+  ## Set up background details  
+  tm_shape(
+    hillshade,
+    raster.downsample = FALSE) +
+    tm_raster(
+      palette = 'Greys',
+      legend.show = FALSE) +
+    
+    tm_shape(
+      ak,
+      bbox = 
+        list(wah, tch, cah, pch) %>% 
+        reduce(st_union) %>%
+        st_bbox(),
+      is.master = TRUE) +
+    tm_borders() +
+    
+    tm_shape(canada) +
+    tm_polygons(col = 'grey30') +
+    
+    ## Add additional features
+    tm_shape(subsistence,
+             name = 'Subsistence use areas') +
+    tm_polygons(
+      col = 'yellow',
+      alpha = 0.4) +
+    
+    tm_shape(npra) +
+    tm_borders(lwd = 1.5,
+               col = 'brown') +
+    
+    tm_shape(refuge) +
+    tm_borders(lwd = 1.5,
+               col = 'brown') +
+    
+    tm_shape(colville,
+             name = 'Colville River watershed') +
+    tm_polygons(
+      col = 'lightblue',
+      border.col = 'blue',
+      alpha = 0.4) +
+    
+    tm_shape(roads_all) +
+    tm_lines() +
+    
+    tm_shape(ambler,
+             name = 'Ambler Road') +
+    tm_lines(
+      col = 'red',
+      lwd = 2) +
+    
+    ## Add combined caribou range
+    tm_shape(caribou) +
+    tm_borders(
+      col = 'white',
+      lwd = 3) +
+    
+    ## Add cities
+    tm_shape(ak_cities) +
+    tm_dots(size = 0.25) +
+    
+    ## Modify appearance
+    tm_layout(
+      main.title = 'Option 3: Caribou herd ranges',
+      main.title.position = 'center',
+      bg.color = 'skyblue',
+      legend.bg.color = 'white') +
+    
+    tm_add_legend(
+      type = 'fill',
+      labels = 'Subsistence areas',
+      col = 'yellow',
+      border.col = 'grey',
+      alpha = 0.7) +
+    
+    tm_add_legend(
+      type = 'fill',
+      labels = 'Colville watershed',
+      col = 'lightblue',
+      border.col = 'blue',
+      alpha = 0.4) +
+    
+    tm_add_legend(
+      type = 'line',
+      lwd = 2,
+      labels = 'Ambler Road',
+      col = 'red')
+```
+
+<br>
+
+<hr>
+
+## Summary
+
+### Summary table
+
+The table below summarizes data for each of the three options. There are also interactive tools for viewing data in table and spatial forms below.
+
+```{r summary_table, echo = FALSE, message = FALSE, warning = FALSE}
+opts <- c('Ecoregions', 'Indigenous homelands', 'Caribou ranges')
+
+## Calculate summary information
+summary_data <-
+  list(arctic_ecoregion %>% 
+       st_union(),
+     AKnative,
+     caribou) %>% 
+  imap(
+    function(.x, .y){
+      ## Identify the cities that intersect with the study area polygon
+      int_tmp <- st_intersection(ak_cities, .x)
+      
+      ## Calculate and compile the desired outputs
+      list(
+        ## Option name
+        'name' = opts[.y],
+        ## Option area (ha)
+        'area' =
+          area_acres(.x),
+        ## Vector of communities included in the option
+        'communities' =
+          int_tmp %>% 
+          pull(name),
+        ## Vector of WACH WG communities included
+        'wg_communities' =
+          int_tmp %>% 
+          filter(name %in% wg_communities) %>% 
+          pull(name),
+        ## Vector of key partners included
+        'partners' =
+          int_tmp %>% 
+          filter(name %in% partners) %>% 
+          pull(name),
+        ## Percent Ambler Road length included
+        'ambler_per' =
+          as.numeric(st_length(st_intersection(ambler, .x)) / st_length(ambler)),
+        'colville_per' = 
+          as.numeric(sum(st_area(st_intersection(colville, .x))) / st_area(colville))
+      )
+    }
+  )
+names(summary_data) <- opts
+
+## Display the results as a kable
+summary_data %>% 
+  map_dfr(
+    function(x){
+      tibble(
+        option = x$name,
+        area = x$area,
+        communities_included = length(x$communities),
+        wg_included = length(x$wg_communities),
+        partners_included = length(x$partners),
+        ambler_included = if_else(x$ambler_per > 0.9, 'Yes', 'No'),
+        colville_included = if_else(x$colville_per > 0.9, 'Yes', 'No')
+      )
+    }
+  ) %>% 
+  knitr::kable(
+    format = 'html',
+    digits = 0,
+    col.names = c('Option',
+                  'Total area (acres)',
+                  'Communities included',
+                  'WACH WG communities included',
+                  'Key partners included',
+                  'Ambler road included?',
+                  'Colville watershed included?'),
+    align = c('l', 'r', 'c', 'c', 'c', 'c', 'c'),
+    format.args = list(big.mark = ',')) %>% 
+  kableExtra::kable_styling(
+    bootstrap_options = 'striped')
+```
+
+The number of communities included in each option is a slight underestimate, as differences between datasets lead some communities (e.g., Point Hope) to lie slightly outside of boundaries and thus to not be counted. Nonetheless, biases are the same across each option and thus the numbers above still reflect relative patterns.
+
+There are 41 communities in northwest Alaska represented on the Western Arctic Caribou Herd Working Group (WACH WG). The number above reflects how many of these 41 are included in each option.
+
+"Key" partner communities were subjectively identified as those groups with which TWS has worked most in the past and include:
+
+* Arctic Village
+* Kaktovik
+* Nuiqsut
+* Utqiaġvik
+* Venetie
+
+<br>
+
+As with the WACH WG list, the number above indicates how many of those key partners are included in each option.
+
+The Ambler Road and Colville River watershed are considered included in a given option if more than 90% of their length or area, respectively, lie within the option boundary.
+
+<br>
+
+### Interactive map
+
+To enable better exploration of the boundary options, check out the interactive map below by clicking, panning, and zooming.
+
+The three options described above are depicted in the map as follows:
+
+* <span style="color: blue;">Option 1 - </span> Arctic ecoregion
+* <span style="color: purple;">Option 2 - </span> Indigenous homelands
+* <span style="color: red;">Option 3 - </span> Caribou range
+
+<br>
+
+Each of these can be turned off or on using the buttons in the menu at top left. Click the button with the three stacked grey squares to reveal this menu.
+
+Other data also can be turned on and off to aid in data exploration. Alaskan communities (turned off by default) are initially displayed as large circles with the color and number indicating the aggregated number of communities in a given area. Zooming in to finer scales will distribute the community locations until city- or village-specific points become visible.
+
+The menu can also be used to select between three different basemaps:
+
+* `OpenStreetMap` provides road and human feature information, as well as selected natural features.
+* `Esri.WorldImagery` displays a digital photo, for a snapshot of ground conditions.
+* `Esri.WorldTopo` offers terrain features as well as various human features.
+
+<br>
+
+```{r interactive_map, echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE}
+## Initate an interactive tmap
+tmap_mode('view')
+tmap_options(check.and.fix = TRUE)
+  
+tm_tmp <-
+  ## Add desired basemaps
+  tm_basemap(
+    c('OpenStreetMap',
+      'Esri.WorldImagery',
+      'Esri.WorldTopoMap')) +
+    
+    ## Add each boundary option
+    tm_shape(
+      arctic_ecoregion %>% 
+        st_union(),
+      name = 'Option 1 - Arctic ecoregion') +
+    tm_borders(
+      col = 'blue',
+      lwd = 3) +
+    
+    tm_shape(
+      AKnative,
+      name = 'Option 2 - Indigenous homelands') +
+    tm_borders(
+      col = 'purple',
+      lwd = 3) +
+    
+    tm_shape(
+      caribou,
+      name = 'Option 3 - Caribou range') +
+    tm_borders(
+      col = 'red',
+      lwd = 3) +
+    
+    ## Add additional features
+    tm_shape(ecoregion,
+             name = 'Ecoregions') +
+    tm_polygons(
+      col = 'US_L3NAME',
+      alpha = 0.4) +
+  
+    tm_shape(subsistence,
+             name = 'Subsistence use areas') +
+    tm_polygons(
+      col = 'yellow',
+      alpha = 0.4) +
+    
+    tm_shape(npra,
+             name = 'NPR-A') +
+    tm_borders(lwd = 1.5,
+               col = 'brown',
+               alpha = 0.5) +
+    
+    tm_shape(refuge,
+             name = 'Arctic Refuge') +
+    tm_borders(lwd = 1.5,
+               col = 'brown',
+               alpha = 0.5) +
+    
+    tm_shape(arctic_circle,
+             name = 'Arctic Circle') +
+    tm_lines() +
+  
+    tm_shape(colville,
+             name = 'Colville River watershed') +
+    tm_polygons(
+      col = 'lightblue',
+      border.col = 'blue',
+      alpha = 0.4) +
+    
+    tm_shape(roads_all,
+             name = 'Roads') +
+    tm_lines(alpha = 0.5) +
+
+    tm_shape(ambler,
+             name = 'Ambler Road') +
+    tm_lines(
+      col = 'brown',
+      lwd = 2,
+      alpha = 0.6) +
+    
+    ## Add cities
+    tm_shape(ak_cities,
+             name = "Communities") +
+    tm_dots(size = 0.1,
+            alpha = 0.5,
+            clustering = TRUE)
+
+## Make this a leaflet widget and use leaflet to hide some info by default
+tm_tmp %>% 
+  tmap_leaflet() %>% 
+  leaflet::hideGroup(c('Ecoregions',
+                       'Subsistence use areas',
+                       'Colville River watershed',
+                       'Communities'))
+
+```
+
+<hr>
+
+<br>
+
+Thank you for your consideration of several possible Arctic Landscape boundaries. As was stated above, these are not intended to be the only options but rather as starting points for discussion. If you have further questions or are interested in other data to help inform your decisions, please do not hesitate to reach out to Tim Fullman and Jason Leppi.
+
+
+
+
